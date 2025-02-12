@@ -8,10 +8,18 @@ import (
 	"io"
 	"strings"
 	_ "github.com/lib/pq"
+	"github.com/joho/godotenv"
+	"github.com/Lunnaris01/bootdev_servers/internal/database"
+	"os"
+	"database/sql"
+	"log"
+	"time"
+	"github.com/google/uuid"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries *database.Queries
 
 }
 
@@ -39,59 +47,71 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, req *http.Request){
 
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, req *http.Request){
 	cfg.fileserverHits.Store(0)
+	cfg.dbQueries.DeleteAllUsers(req.Context())
+	cfg.dbQueries.DeleteAllChirps(req.Context())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("Reset successfull"))
 
 }
 
-func (cfg *apiConfig) validateChirpHandler (w http.ResponseWriter, req *http.Request){
-	type http_body struct{
+
+func (cfg *apiConfig) postChirpsHandler (w http.ResponseWriter, req *http.Request){
+
+	type req_body struct {
 		Body string `json:"body"`
-		Error string `json:"error"`
-		Valid bool `json:"valid"`
-		CleanedBody string `json:"cleaned_body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
 
-	r_body := http_body{}
+	type res_body struct{
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	r_body := req_body{}
 	r_data, err := io.ReadAll(req.Body)
+	defer req.Body.Close()
 	if err != nil {
-		response_body := http_body{
-			Error: "Something went wrong",
-		}	
-		response_json, _ := json.Marshal(response_body)
 		w.WriteHeader(400)
-		w.Write([]byte(response_json))
+		w.Write([]byte(err.Error()))
 		return
 	}
-	defer req.Body.Close()
 	err = json.Unmarshal(r_data,&r_body)
 	if err != nil {
-		response_body := http_body{
-			Error: "Something went wrong",
-		}	
-		response_json, _ := json.Marshal(response_body)
 		w.WriteHeader(400)
-		w.Write(response_json)
+		w.Write([]byte(err.Error()))
 		return
 	}
-	r_body.CleanedBody = clean_chirp(r_body.Body)
-	if len(r_body.CleanedBody)>140{
-		response_body := http_body{
-			Error: "Chirp is too long",
-		}	
-		response_json, _ := json.Marshal(response_body)
+	r_body.Body = clean_chirp(r_body.Body)
+	if len(r_body.Body)>140{
 		w.WriteHeader(400)
-		w.Write(response_json)
+		w.Write([]byte("Chirp too Long!"))
 		return
 	}
-	response_body := http_body{
-		CleanedBody: r_body.CleanedBody,
-		Valid: true,
-	}	
-	response_json, _ := json.Marshal(response_body)
-	w.WriteHeader(200)
+	dbChirp, err := cfg.dbQueries.CreateChirp(req.Context(),database.CreateChirpParams{r_body.Body,r_body.UserID})
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	retChirp := res_body{
+		ID: dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body: dbChirp.Body,
+		UserID: dbChirp.UserID,
+	}
+
+	response_json, _ := json.Marshal(retChirp)
+	w.WriteHeader(201)
 	w.Write(response_json)
+
+
+
 }
 
 func clean_chirp(input_message string) string {
@@ -104,19 +124,159 @@ func clean_chirp(input_message string) string {
 }
 
 
+
+func (cfg *apiConfig) getChirpsHandler (w http.ResponseWriter, req *http.Request){
+	chirps, err := cfg.dbQueries.GetAllChirps(req.Context())
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	type resChirp struct{
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	var res_chirps []resChirp
+
+	for _, chirp := range chirps{
+		res_chirps = append(res_chirps,resChirp{
+			ID: chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body: chirp.Body,
+			UserID: chirp.UserID,
+		})
+
+	}
+	
+	response_json, err := json.Marshal(res_chirps)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.WriteHeader(200)
+	w.Write(response_json)
+}
+
+func (cfg *apiConfig) getChirpHandler (w http.ResponseWriter, req *http.Request){
+	chirpIDStr := req.PathValue("chirpID")
+	chirpIDUUID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	db_chirp, err := cfg.dbQueries.GetChirp(req.Context(),chirpIDUUID)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	type resChirp struct{
+		ID uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	res_chirp := resChirp{
+		ID: db_chirp.ID,
+		CreatedAt: db_chirp.CreatedAt,
+		UpdatedAt: db_chirp.UpdatedAt,
+		Body: db_chirp.Body,
+		UserID: db_chirp.UserID,
+	}
+	response_json, err := json.Marshal(res_chirp)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.WriteHeader(200)
+	w.Write(response_json)
+}
+
+
+
+func (cfg *apiConfig) addUserHandler(w http.ResponseWriter, req *http.Request){
+	type addUserBody struct{
+		Email string `json:"email"`
+	}
+	type User struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string	`json:"email"`
+	}
+
+	r_body := addUserBody{}
+	r_data, err := io.ReadAll(req.Body)
+
+	defer req.Body.Close()
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	err = json.Unmarshal(r_data,&r_body)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	db_user, err := cfg.dbQueries.CreateUser(req.Context(),r_body.Email)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	ret_user := User {
+		ID: db_user.ID,
+		CreatedAt: db_user.CreatedAt,
+		UpdatedAt: db_user.UpdatedAt,
+		Email: db_user.Email,
+	}
+	response_json, _ := json.Marshal(ret_user)
+	w.WriteHeader(201)
+	w.Write(response_json)
+}
+
+
+
 func main(){
+	godotenv.Load()
+
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("Failed to load database")
+	}
+	dbQueries := database.New(db)
+
+
 	serveMux := http.NewServeMux()
 	server := http.Server{
 		Handler: serveMux,
 		Addr: "localhost:8080",
 	}
-	apiCfg := apiConfig{}
+	apiCfg := apiConfig{
+		fileserverHits: atomic.Int32{},
+		dbQueries: dbQueries,
+	}
 
 	serveMux.Handle("/app/",http.StripPrefix("/app/",apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 	serveMux.HandleFunc("GET /api/healthz",healthHandler)
 	serveMux.HandleFunc("GET /admin/metrics",apiCfg.metricsHandler)
 	serveMux.HandleFunc("POST /admin/reset",apiCfg.resetHandler)
-	serveMux.HandleFunc("POST /api/validate_chirp",apiCfg.validateChirpHandler)
+	serveMux.HandleFunc("POST /api/chirps",apiCfg.postChirpsHandler)
+	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
+	serveMux.HandleFunc("POST /api/users",apiCfg.addUserHandler)
 	server.ListenAndServe()
 
 
