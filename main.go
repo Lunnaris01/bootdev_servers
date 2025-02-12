@@ -10,6 +10,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/joho/godotenv"
 	"github.com/Lunnaris01/bootdev_servers/internal/database"
+	"github.com/Lunnaris01/bootdev_servers/internal/auth"
 	"os"
 	"database/sql"
 	"log"
@@ -20,6 +21,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries *database.Queries
+	platform string
 
 }
 
@@ -46,13 +48,18 @@ func (cfg *apiConfig) metricsHandler(w http.ResponseWriter, req *http.Request){
 }
 
 func (cfg *apiConfig) resetHandler(w http.ResponseWriter, req *http.Request){
+	if cfg.platform != "dev" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(403)
+		w.Write([]byte("Reset is only possible in development mode"))	
+		return 
+	}
 	cfg.fileserverHits.Store(0)
 	cfg.dbQueries.DeleteAllUsers(req.Context())
 	cfg.dbQueries.DeleteAllChirps(req.Context())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("Reset successfull"))
-
 }
 
 
@@ -206,6 +213,7 @@ func (cfg *apiConfig) getChirpHandler (w http.ResponseWriter, req *http.Request)
 func (cfg *apiConfig) addUserHandler(w http.ResponseWriter, req *http.Request){
 	type addUserBody struct{
 		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 	type User struct {
 		ID        uuid.UUID `json:"id"`
@@ -229,7 +237,19 @@ func (cfg *apiConfig) addUserHandler(w http.ResponseWriter, req *http.Request){
 		w.Write([]byte(err.Error()))
 		return
 	}
-	db_user, err := cfg.dbQueries.CreateUser(req.Context(),r_body.Email)
+	hashedPassword, err := auth.HashPassword(r_body.Password)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	db_user, err := cfg.dbQueries.CreateUser(
+		req.Context(),
+		database.CreateUserParams{
+			Email: r_body.Email,
+			HashedPassword: hashedPassword,
+		})
 	if err != nil {
 		w.WriteHeader(400)
 		w.Write([]byte(err.Error()))
@@ -246,6 +266,64 @@ func (cfg *apiConfig) addUserHandler(w http.ResponseWriter, req *http.Request){
 	w.Write(response_json)
 }
 
+func (cfg *apiConfig) loginUserHandler (w http.ResponseWriter, req *http.Request){
+	type loginUserBody struct{
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	type User struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string	`json:"email"`
+	}
+
+
+	r_body := loginUserBody{}
+	r_data, err := io.ReadAll(req.Body)
+
+	defer req.Body.Close()
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	err = json.Unmarshal(r_data,&r_body)
+	if err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	db_user, err := cfg.dbQueries.GetUserByMail(req.Context(),r_body.Email)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Incorrect email or password"))
+		return
+	}
+	err = auth.CheckPasswordHash(r_body.Password,db_user.HashedPassword)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Incorrect email or password"))
+		return
+	}
+
+
+	ret_user := User {
+		ID: db_user.ID,
+		CreatedAt: db_user.CreatedAt,
+		UpdatedAt: db_user.UpdatedAt,
+		Email: db_user.Email,
+	}
+	
+	response_json, _ := json.Marshal(ret_user)
+	w.WriteHeader(200)
+	w.Write(response_json)
+
+
+
+}
+
 
 
 func main(){
@@ -257,6 +335,7 @@ func main(){
 		log.Fatalf("Failed to load database")
 	}
 	dbQueries := database.New(db)
+	env_platform := os.Getenv("PLATFORM")
 
 
 	serveMux := http.NewServeMux()
@@ -267,6 +346,7 @@ func main(){
 	apiCfg := apiConfig{
 		fileserverHits: atomic.Int32{},
 		dbQueries: dbQueries,
+		platform: env_platform,
 	}
 
 	serveMux.Handle("/app/",http.StripPrefix("/app/",apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
@@ -277,6 +357,7 @@ func main(){
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 	serveMux.HandleFunc("POST /api/users",apiCfg.addUserHandler)
+	serveMux.HandleFunc("POST /api/login",apiCfg.loginUserHandler)
 	server.ListenAndServe()
 
 
