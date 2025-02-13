@@ -16,6 +16,7 @@ import (
 	"log"
 	"time"
 	"github.com/google/uuid"
+	"sort"
 )
 
 type apiConfig struct {
@@ -151,11 +152,34 @@ func clean_chirp(input_message string) string {
 
 
 func (cfg *apiConfig) getChirpsHandler (w http.ResponseWriter, req *http.Request){
-	chirps, err := cfg.dbQueries.GetAllChirps(req.Context())
+
+	authorID := req.URL.Query().Get("author_id")
+	sortBy := req.URL.Query().Get("sort")
+	sortBy = strings.ToUpper(sortBy)
+	
+	var chirps []database.Chirp
+	var err error
+	if authorID == ""{
+		chirps, err = cfg.dbQueries.GetAllChirps(req.Context())
+	} else {
+		authorUUID, err := uuid.Parse(authorID)
+		if err != nil {
+			w.WriteHeader(400)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		chirps, err = cfg.dbQueries.GetAllChirpsForAuthor(req.Context(),authorUUID)
+	}
+
 	if err != nil {
 		w.WriteHeader(400)
 		w.Write([]byte(err.Error()))
 		return
+	}
+	if sortBy == "DESC"{
+		sort.Slice(chirps, func(i,j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)			
+		})
 	}
 	type resChirp struct{
 		ID uuid.UUID `json:"id"`
