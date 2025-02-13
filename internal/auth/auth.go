@@ -67,16 +67,11 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error){
 }
 
 func GetBearerToken(headers http.Header) (string,error){
-	bearer := headers.Get("Authorization")
-	if bearer == "" {
-		return "", fmt.Errorf("No Authorization key or empty value!")
+	keyString := "Bearer"
+	bearerToken, err := GetAuthKey(headers,keyString)
+	if err != nil{
+		return "", err
 	}
-	bearer = strings.Trim(bearer," ")
-	if !strings.HasPrefix(strings.ToLower(bearer),"bearer"){
-		return "", fmt.Errorf("No \"Bearer\" substring in Authorization value!")
-	}
-	bearerToken := strings.Replace(bearer,"Bearer", "",1)
-	bearerToken = strings.Trim(bearerToken, " ")
 	return bearerToken, nil
 }
 
@@ -86,4 +81,28 @@ func MakeRefreshToken() (string,error){
 	rand.Read(key)
 	key_string := hex.EncodeToString(key)
 	return key_string, nil
+}
+
+func GetAPIKey(headers http.Header) (string, error) {
+	keyString := "ApiKey"
+	apiToken, err := GetAuthKey(headers,keyString)
+	if err != nil{
+		return "", err
+	}
+	return apiToken, nil
+
+}
+
+func GetAuthKey(headers http.Header, keyName string) (string, error) {
+	authString := headers.Get("Authorization")
+	if authString == "" {
+		return "", fmt.Errorf("No Authorization key or empty value!")
+	}
+	authString = strings.Trim(authString," ")
+	if !strings.HasPrefix(authString,keyName){
+		return "", fmt.Errorf("No \"%s\" substring in Authorization value!",keyName)
+	}
+	authToken := strings.Replace(authString,keyName, "",1)
+	authToken = strings.Trim(authToken, " ")
+	return authToken, nil
 }

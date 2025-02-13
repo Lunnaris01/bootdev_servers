@@ -23,6 +23,7 @@ type apiConfig struct {
 	dbQueries *database.Queries
 	platform string
 	secretKey string
+	polkaKey string
 
 }
 
@@ -550,6 +551,19 @@ func (cfg *apiConfig) subscribeUser (w http.ResponseWriter, req *http.Request){
 		} `json:"data"`
 	}
 
+	api_key, err := auth.GetAPIKey(req.Header)
+	fmt.Println(api_key)
+	if err != nil{
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	if api_key != cfg.polkaKey {
+		w.WriteHeader(401)
+		w.Write([]byte("Failed to read or verify API key"))
+		return
+	}
+
 	r_body := subscribeUserBody{}
 	r_data, err := io.ReadAll(req.Body)
 	defer req.Body.Close()
@@ -601,6 +615,7 @@ func main(){
 	dbQueries := database.New(db)
 	env_platform := os.Getenv("PLATFORM")
 	env_secretKey := os.Getenv("SECRET_KEY")
+	env_polkaKey := os.Getenv("POLKA_KEY")
 
 	serveMux := http.NewServeMux()
 	server := http.Server{
@@ -612,6 +627,7 @@ func main(){
 		dbQueries: dbQueries,
 		platform: env_platform,
 		secretKey: env_secretKey,
+		polkaKey: env_polkaKey,
 	}
 
 	serveMux.Handle("/app/",http.StripPrefix("/app/",apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
