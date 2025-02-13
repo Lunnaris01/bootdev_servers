@@ -281,6 +281,7 @@ func (cfg *apiConfig) addUserHandler(w http.ResponseWriter, req *http.Request){
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string	`json:"email"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 
 	r_body := addUserBody{}
@@ -321,6 +322,7 @@ func (cfg *apiConfig) addUserHandler(w http.ResponseWriter, req *http.Request){
 		CreatedAt: db_user.CreatedAt,
 		UpdatedAt: db_user.UpdatedAt,
 		Email: db_user.Email,
+		IsChirpyRed: db_user.IsChirpyRed,
 	}
 	response_json, _ := json.Marshal(ret_user)
 	w.WriteHeader(201)
@@ -340,6 +342,7 @@ func (cfg *apiConfig) loginUserHandler (w http.ResponseWriter, req *http.Request
 		Email     string	`json:"email"`
 		Token 	  string	`json:"token"`
 		RefreshToken string `json:"refresh_token"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 
 
@@ -401,6 +404,7 @@ func (cfg *apiConfig) loginUserHandler (w http.ResponseWriter, req *http.Request
 		Email: db_user.Email,
 		Token: jwtToken,
 		RefreshToken: refreshToken.Token,
+		IsChirpyRed: db_user.IsChirpyRed,
 	}
 	
 	response_json, _ := json.Marshal(ret_user)
@@ -538,6 +542,54 @@ func (cfg *apiConfig) updateUserHandler (w http.ResponseWriter, req *http.Reques
 
 }
 
+func (cfg *apiConfig) subscribeUser (w http.ResponseWriter, req *http.Request){
+	type subscribeUserBody struct{
+		Event string `json:"event"`
+		Data struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	r_body := subscribeUserBody{}
+	r_data, err := io.ReadAll(req.Body)
+	defer req.Body.Close()
+
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	err = json.Unmarshal(r_data,&r_body)
+
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	if r_body.Event != "user.upgraded"{
+		w.WriteHeader(204)
+		return
+	}
+	userUUID, err := uuid.Parse(r_body.Data.UserID)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	err = cfg.dbQueries.SubscribeUser(req.Context(),userUUID)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.WriteHeader(204)
+
+
+
+
+}
 func main(){
 	godotenv.Load()
 
@@ -575,6 +627,7 @@ func main(){
 	serveMux.HandleFunc("POST /api/login",apiCfg.loginUserHandler)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.refreshAccessToken)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.revokeRefreshToken)
+	serveMux.HandleFunc("POST /api/polka/webhooks", apiCfg.subscribeUser)
 
 	server.ListenAndServe()
 
