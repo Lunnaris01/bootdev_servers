@@ -4,6 +4,7 @@ import (
     "testing"
     "time"
     "github.com/google/uuid"
+	"net/http"
 )
 
 
@@ -59,4 +60,69 @@ func TestValidateJWT(t *testing.T) {
             t.Errorf("Wrong Secret was accepted")
         }
     })
+}
+
+
+func TestBearerToken(t *testing.T) {
+    // Create a test UUID and secret
+    
+    // Test valid token
+    t.Run("Test trimming", func(t *testing.T) {
+		//add authorization to header
+		header := http.Header{}
+        header.Add("Authorization", "Bearer  Thistokenisanewtoken  ")
+
+        bearerToken, err := GetBearerToken(header)
+        if err != nil {
+            t.Fatal("Failed to get bearer Token:", err)
+        }
+
+        expectedToken := "Thistokenisanewtoken"
+        if bearerToken != expectedToken {
+            t.Errorf("Unexpected Token: got %v, want %v", bearerToken, expectedToken)
+        }
+    })
+
+    t.Run("Test valid", func(t *testing.T) {
+		//add authorization to header
+		header := http.Header{}
+
+        header.Add("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+
+        bearerToken, err := GetBearerToken(header)
+        if err != nil {
+            t.Fatal("Failed to get bearer Token:", err)
+        }
+
+        expectedToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        if bearerToken != expectedToken {
+            t.Errorf("Unexpected Token: got %v, want %v", bearerToken, expectedToken)
+        }
+    })
+
+    t.Run("Test wrong key", func(t *testing.T) {
+		//add authorization to header
+		header := http.Header{}
+
+        header.Add("Authorize", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+
+        bearerToken, err := GetBearerToken(header)
+        if err == nil {
+            t.Errorf("Expected an error and empty Token but got Token: %v,Error: %v\n",bearerToken,err)
+        }
+    })
+
+    t.Run("Test misstyped bearer", func(t *testing.T) {
+		//add authorization to header
+		header := http.Header{}
+
+        header.Add("Authorization", "Berer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+
+        bearerToken, err := GetBearerToken(header)
+        if err == nil {
+            t.Errorf("Expected an error and empty Token but got Token: %v,Error: %v\n",bearerToken,err)
+        }
+    })
+
+
 }

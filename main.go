@@ -22,6 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries *database.Queries
 	platform string
+	secretKey string
 
 }
 
@@ -57,6 +58,7 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, req *http.Request){
 	cfg.fileserverHits.Store(0)
 	cfg.dbQueries.DeleteAllUsers(req.Context())
 	cfg.dbQueries.DeleteAllChirps(req.Context())
+	cfg.dbQueries.DeleteAllRefreshTokens(req.Context())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("Reset successfull"))
@@ -78,29 +80,44 @@ func (cfg *apiConfig) postChirpsHandler (w http.ResponseWriter, req *http.Reques
 		UserID uuid.UUID `json:"user_id"`
 	}
 
+	bearerToken, err := auth.GetBearerToken(req.Header)
+	
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	userID, err := auth.ValidateJWT(bearerToken, cfg.secretKey)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
 	r_body := req_body{}
 	r_data, err := io.ReadAll(req.Body)
 	defer req.Body.Close()
 	if err != nil {
-		w.WriteHeader(400)
+		w.WriteHeader(401)
 		w.Write([]byte(err.Error()))
 		return
 	}
 	err = json.Unmarshal(r_data,&r_body)
 	if err != nil {
-		w.WriteHeader(400)
+		w.WriteHeader(401)
 		w.Write([]byte(err.Error()))
 		return
 	}
 	r_body.Body = clean_chirp(r_body.Body)
 	if len(r_body.Body)>140{
-		w.WriteHeader(400)
+		w.WriteHeader(401)
 		w.Write([]byte("Chirp too Long!"))
 		return
 	}
-	dbChirp, err := cfg.dbQueries.CreateChirp(req.Context(),database.CreateChirpParams{r_body.Body,r_body.UserID})
+	dbChirp, err := cfg.dbQueries.CreateChirp(req.Context(),database.CreateChirpParams{r_body.Body,userID})
 	if err != nil {
-		w.WriteHeader(400)
+		w.WriteHeader(401)
 		w.Write([]byte(err.Error()))
 		return
 	}
@@ -110,7 +127,7 @@ func (cfg *apiConfig) postChirpsHandler (w http.ResponseWriter, req *http.Reques
 		CreatedAt: dbChirp.CreatedAt,
 		UpdatedAt: dbChirp.UpdatedAt,
 		Body: dbChirp.Body,
-		UserID: dbChirp.UserID,
+		UserID: userID,
 	}
 
 	response_json, _ := json.Marshal(retChirp)
@@ -208,6 +225,50 @@ func (cfg *apiConfig) getChirpHandler (w http.ResponseWriter, req *http.Request)
 	w.Write(response_json)
 }
 
+func (cfg *apiConfig) deleteChirpHandler (w http.ResponseWriter, req *http.Request){
+	//Check first if the Chirp exists!
+	chirpIDStr := req.PathValue("chirpID")
+	chirpIDUUID, err := uuid.Parse(chirpIDStr)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	db_chirp, err := cfg.dbQueries.GetChirp(req.Context(),chirpIDUUID)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	bearerToken, err := auth.GetBearerToken(req.Header)
+	
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	userID, err := auth.ValidateJWT(bearerToken, cfg.secretKey)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	if db_chirp.UserID != userID{
+		w.WriteHeader(403)
+		return
+	}
+	
+	err = cfg.dbQueries.DeleteChirp(req.Context(),chirpIDUUID)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+	w.WriteHeader(204)
+
+}
 
 
 func (cfg *apiConfig) addUserHandler(w http.ResponseWriter, req *http.Request){
@@ -277,12 +338,13 @@ func (cfg *apiConfig) loginUserHandler (w http.ResponseWriter, req *http.Request
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string	`json:"email"`
+		Token 	  string	`json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 
 
 	r_body := loginUserBody{}
 	r_data, err := io.ReadAll(req.Body)
-
 	defer req.Body.Close()
 	if err != nil {
 		w.WriteHeader(400)
@@ -290,6 +352,7 @@ func (cfg *apiConfig) loginUserHandler (w http.ResponseWriter, req *http.Request
 		return
 	}
 	err = json.Unmarshal(r_data,&r_body)
+	// Ensure valid value was used or set default value of 1 hour for Duration
 	if err != nil {
 		w.WriteHeader(400)
 		w.Write([]byte(err.Error()))
@@ -308,12 +371,36 @@ func (cfg *apiConfig) loginUserHandler (w http.ResponseWriter, req *http.Request
 		return
 	}
 
+	jwtToken, err := auth.MakeJWT(db_user.ID,cfg.secretKey,time.Duration(1)*time.Hour)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Failed to create JWT Token"))
+		return
+	}
+
+	str_refreshToken, err := auth.MakeRefreshToken()
+
+	refreshTokenParams := database.CreateRefreshTokenParams{
+		Token:		str_refreshToken,
+		ExpiresAt:	time.Now().Add(time.Duration(60*24)*time.Hour),
+		UserID:		db_user.ID,
+	}
+
+	refreshToken, err := cfg.dbQueries.CreateRefreshToken(req.Context(),refreshTokenParams)
+	if err != nil {
+		fmt.Println("Error creating refresh token: %v", err)
+		return 
+	}
+
+
 
 	ret_user := User {
 		ID: db_user.ID,
 		CreatedAt: db_user.CreatedAt,
 		UpdatedAt: db_user.UpdatedAt,
 		Email: db_user.Email,
+		Token: jwtToken,
+		RefreshToken: refreshToken.Token,
 	}
 	
 	response_json, _ := json.Marshal(ret_user)
@@ -324,19 +411,144 @@ func (cfg *apiConfig) loginUserHandler (w http.ResponseWriter, req *http.Request
 
 }
 
+func (cfg *apiConfig) refreshAccessToken (w http.ResponseWriter, req *http.Request){
+	bearerToken, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Failed to retreive Refresh Token"))
+		return
+	}
+	tokenUserID, err := cfg.dbQueries.GetUserFromRefreshToken(req.Context(),bearerToken)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Invalid token"))
+		return
+	}
 
+	jwtToken, err := auth.MakeJWT(tokenUserID,cfg.secretKey,time.Duration(1)*time.Hour)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Failed to create access token"))
+		return
+	}
+	type ResponseBody struct {
+		Token string `json:"token"`
+	}
+
+	res_body := ResponseBody{
+		Token:  jwtToken,
+	}
+	response_json, _ := json.Marshal(res_body)
+	w.WriteHeader(200)
+	w.Write(response_json)
+}
+
+func (cfg *apiConfig) revokeRefreshToken (w http.ResponseWriter, req *http.Request){
+	bearerToken, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Failed to read Token"))
+		return
+	}
+
+	err = cfg.dbQueries.RevokeTokenAccess(req.Context(),database.RevokeTokenAccessParams{bearerToken,time.Now()})
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Failed to revoke Access for Token"))
+		return
+	}
+	w.WriteHeader(204)
+
+}
+
+
+func (cfg *apiConfig) updateUserHandler (w http.ResponseWriter, req *http.Request){
+	bearerToken, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Failed to retreive Refresh Token"))
+		return
+	}
+	tokenUserID, err := auth.ValidateJWT(bearerToken,cfg.secretKey)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte("Invalid token"))
+		return
+	}
+	type updateUserBody struct{
+		Password string `json:"password"`
+		Email string `json:"email"`
+	}
+
+	r_body := updateUserBody{}
+	r_data, err := io.ReadAll(req.Body)
+	defer req.Body.Close()
+
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	err = json.Unmarshal(r_data,&r_body)
+
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	new_hashedPassword, err := auth.HashPassword(r_body.Password)
+
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+
+	updated_user, err := cfg.dbQueries.UpdateUserPassAndMailByID(req.Context(),database.UpdateUserPassAndMailByIDParams{
+		ID: tokenUserID,
+		Email: r_body.Email,
+		HashedPassword: new_hashedPassword,
+	})
+
+	if err != nil{
+		w.WriteHeader(401)
+		w.Write([]byte(err.Error()))
+		return
+	}
+
+	type User struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string	`json:"email"`
+	}
+
+	ret_user := User {
+		ID: updated_user.ID,
+		CreatedAt: updated_user.CreatedAt,
+		UpdatedAt: updated_user.UpdatedAt,
+		Email: updated_user.Email,
+	}
+	response_json, _ := json.Marshal(ret_user)
+	w.WriteHeader(200)
+	w.Write(response_json)
+
+}
 
 func main(){
 	godotenv.Load()
 
-	dbURL := os.Getenv("DB_URL")
-	db, err := sql.Open("postgres", dbURL)
+	env_dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", env_dbURL)
 	if err != nil {
 		log.Fatalf("Failed to load database")
 	}
 	dbQueries := database.New(db)
 	env_platform := os.Getenv("PLATFORM")
-
+	env_secretKey := os.Getenv("SECRET_KEY")
 
 	serveMux := http.NewServeMux()
 	server := http.Server{
@@ -347,6 +559,7 @@ func main(){
 		fileserverHits: atomic.Int32{},
 		dbQueries: dbQueries,
 		platform: env_platform,
+		secretKey: env_secretKey,
 	}
 
 	serveMux.Handle("/app/",http.StripPrefix("/app/",apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
@@ -356,8 +569,13 @@ func main(){
 	serveMux.HandleFunc("POST /api/chirps",apiCfg.postChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}",apiCfg.deleteChirpHandler)
 	serveMux.HandleFunc("POST /api/users",apiCfg.addUserHandler)
+	serveMux.HandleFunc("PUT /api/users", apiCfg.updateUserHandler)
 	serveMux.HandleFunc("POST /api/login",apiCfg.loginUserHandler)
+	serveMux.HandleFunc("POST /api/refresh", apiCfg.refreshAccessToken)
+	serveMux.HandleFunc("POST /api/revoke", apiCfg.revokeRefreshToken)
+
 	server.ListenAndServe()
 
 

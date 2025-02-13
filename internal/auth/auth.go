@@ -6,7 +6,10 @@ import(
 	"github.com/golang-jwt/jwt/v5"
 	"time"
 	"github.com/google/uuid"
-
+	"net/http"
+	"strings"
+	"crypto/rand"
+	"encoding/hex"
 )
 
 func HashPassword(password string) (string, error){
@@ -61,4 +64,26 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error){
 		return  uuid.UUID{},err
 	}
 	return userIDUUID,nil
+}
+
+func GetBearerToken(headers http.Header) (string,error){
+	bearer := headers.Get("Authorization")
+	if bearer == "" {
+		return "", fmt.Errorf("No Authorization key or empty value!")
+	}
+	bearer = strings.Trim(bearer," ")
+	if !strings.HasPrefix(strings.ToLower(bearer),"bearer"){
+		return "", fmt.Errorf("No \"Bearer\" substring in Authorization value!")
+	}
+	bearerToken := strings.Replace(bearer,"Bearer", "",1)
+	bearerToken = strings.Trim(bearerToken, " ")
+	return bearerToken, nil
+}
+
+
+func MakeRefreshToken() (string,error){
+	key := make([]byte,32)
+	rand.Read(key)
+	key_string := hex.EncodeToString(key)
+	return key_string, nil
 }

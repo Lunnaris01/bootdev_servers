@@ -7,6 +7,8 @@ package database
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 const createUser = `-- name: CreateUser :one
@@ -54,6 +56,40 @@ SELECT id, created_at, updated_at, email, hashed_password FROM users WHERE email
 
 func (q *Queries) GetUserByMail(ctx context.Context, email string) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserByMail, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+	)
+	return i, err
+}
+
+const getUserFromRefreshToken = `-- name: GetUserFromRefreshToken :one
+SELECT u.id FROM users u INNER JOIN refresh_tokens r ON u.id = r.user_id WHERE r.token = $1 AND r.expires_at > NOW() AND r.revoked_at IS NULL
+`
+
+func (q *Queries) GetUserFromRefreshToken(ctx context.Context, token string) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, getUserFromRefreshToken, token)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const updateUserPassAndMailByID = `-- name: UpdateUserPassAndMailByID :one
+UPDATE users SET email=$2, hashed_password = $3, updated_at = NOW() WHERE id = $1 RETURNING id, created_at, updated_at, email, hashed_password
+`
+
+type UpdateUserPassAndMailByIDParams struct {
+	ID             uuid.UUID
+	Email          string
+	HashedPassword string
+}
+
+func (q *Queries) UpdateUserPassAndMailByID(ctx context.Context, arg UpdateUserPassAndMailByIDParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, updateUserPassAndMailByID, arg.ID, arg.Email, arg.HashedPassword)
 	var i User
 	err := row.Scan(
 		&i.ID,
